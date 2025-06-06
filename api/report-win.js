@@ -1,29 +1,46 @@
-// api/report-win.js -- ОТЛАДОЧНАЯ ВЕРСИЯ
+// api/report-win.js - ФИНАЛЬНАЯ РАБОЧАЯ ВЕРСИЯ
+import { kv } from '@vercel/kv';
+import crypto from 'crypto';
 
 export default async function handler(req, res) {
-  console.log('--- DEBUG START ---');
-  
-  // Логируем тело запроса
-  try {
-    const { initData } = req.body;
-    console.log('Received initData:', initData ? 'Yes' : 'No');
-    if (initData) {
-      console.log('initData length:', initData.length);
-    }
-  } catch (e) {
-    console.log('Error parsing req.body:', e.message);
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  // Логируем переменную окружения
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  console.log('Received BOT_TOKEN from env:', botToken ? `Yes, ends with ...${botToken.slice(-6)}` : 'No, it is undefined');
-  
-  console.log('--- DEBUG END ---');
+  const { initData } = req.body;
+  const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 
-  // Временно всегда отвечаем ошибкой, чтобы не записывать данные
-  return res.status(422).json({
-    message: 'This is a debug response. Check Vercel logs.',
-    initDataReceived: !!req.body.initData,
-    tokenReceived: !!process.env.TELEGRAM_BOT_TOKEN
-  });
+  if (!initData || !BOT_TOKEN) {
+    return res.status(400).json({ error: 'Missing required data' });
+  }
+
+  try {
+    const params = new URLSearchParams(initData);
+    const hash = params.get('hash');
+    params.delete('hash');
+    
+    const dataCheckArr = [];
+    for (const [key, value] of params.entries()) {
+      dataCheckArr.push(`${key}=${value}`);
+    }
+    dataCheckArr.sort();
+    
+    const dataCheckString = dataCheckArr.join('\n');
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
+    const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+    if (calculatedHash !== hash) {
+      return res.status(403).json({ error: 'Invalid hash' });
+    }
+
+    const user = JSON.parse(params.get('user'));
+    const userId = user.id;
+
+    const newScore = await kv.zincrby('leaderboard', 1, userId);
+
+    res.status(200).json({ success: true, newScore });
+  } catch (error) {
+    console.error('Error in /api/report-win:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 }
